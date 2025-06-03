@@ -1,0 +1,46 @@
+
+
+{% extends "base.html" %}
+{% block title %}Conversion - Sign Language Converter{% endblock %}
+{% block content %}
+    <div class="conversion-container">
+        
+        <!-- Webcam feed -->
+        <h2> Live Webcam Feed </h2>
+        <img src="{{ url_for('video_feed') }}" alt="Webcam Feed" id="video" class="video-box" style="width: 800px; height:400px;">
+        
+        
+        <!-- Video upload form -->
+        <form method="POST" enctype="multipart/form-data" class="upload-form">
+            <input type="file" name="video" accept="video/*" class="file-input">
+            <button type="submit" class="btn">Convert Video</button>
+            <form method="POST" class="predict-form">
+            <input type="hidden" name="action" value="predict">
+            <button type="submit" class="btn">Predict from Webcam</button>
+        </form>
+        <!-- Text output -->
+        <textarea id="text-output" class="text-box" readonly style="width: 620px; height: 30px;">
+            {% if text %}Text: {{ text }}{% else %}Text: Waiting for gestures...{% endif %}
+        </textarea>
+        <!-- Audio player -->
+        <audio id="audio-player" controls class="audio-player" {% if audio %}src="{{ url_for('static', filename='audio/' + audio) }}"{% else %}src=""{% endif %}></audio>
+        <button id="toggle-audio" onclick="toggleAudio()" class="btn">Play</button>
+        <!-- Error message -->
+        {% if error %}
+            <p style="color: red;" class="error-message">{{ error }}</p>
+        {% endif %}
+    </div>
+
+    <script>
+        function toggleAudio() {
+            var audio = document.getElementById("audio-player");
+            if (audio.paused) {
+                audio.play();
+                document.getElementById("toggle-audio").textContent = "Pause";
+            } else {
+                audio.pause();
+                document.getElementById("toggle-audio").textContent = "Play";
+            }
+        }
+    </script>
+{% endblock %}
