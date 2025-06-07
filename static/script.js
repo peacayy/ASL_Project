@@ -1,5 +1,7 @@
+
 function toggleMenu() {
-    document.getElementById('sidebar').classList.toggle('active');
+    const sidebar = document.getElementById('sidebar');
+    sidebar.classList.toggle('active');
 }
 
 let isPlaying = false;
@@ -8,36 +10,30 @@ let currentAudioFile = null;
 function togglePlayPause() {
     const button = document.getElementById('play-pause');
     const audioPlayer = document.getElementById('audio-player');
-    
-    if (!currentAudioFile) {
-        console.log("No audio file available to play");
+
+    if (!currentAudioFile || !audioPlayer.src) {
+        console.log("No audio file available");
         alert("No audio available. Please capture a gesture first.");
         return;
     }
-    
-    if (!isPlaying) {
-        // Play audio
-        audioPlayer.src = `/static/audio/${currentAudioFile}`;
+
+    if (audioPlayer.paused) {
         audioPlayer.play()
             .then(() => {
-                console.log("Audio playing");
                 button.textContent = "Pause";
                 isPlaying = true;
             })
             .catch(error => {
-                console.error("Error playing audio:", error);
-                alert("Error playing audio");
+                console.error("Audio playback error:", error);
+                alert("Error playing audio: " + error.message);
             });
     } else {
-        // Pause audio
         audioPlayer.pause();
         button.textContent = "Play";
         isPlaying = false;
-        console.log("Audio paused");
     }
 }
 
-// Handle audio end event
 document.getElementById('audio-player').addEventListener('ended', function() {
     document.getElementById('play-pause').textContent = "Play";
     isPlaying = false;
@@ -48,12 +44,12 @@ function clearText() {
     const audioPlayer = document.getElementById('audio-player');
     audioPlayer.src = '';
     audioPlayer.pause();
+    audioPlayer.style.display = 'none';
+    document.getElementById('play-pause').textContent = "Play";
     currentAudioFile = null;
     isPlaying = false;
-    document.getElementById('play-pause').textContent = "Play";
 }
 
-// Function to update text output with current prediction
 function updateCurrentPrediction() {
     fetch('/api/current_prediction')
         .then(response => response.json())
@@ -70,16 +66,13 @@ function updateCurrentPrediction() {
         });
 }
 
-// Function to capture current webcam prediction and generate audio
 function captureWebcamPrediction() {
     const button = document.getElementById('capture-btn');
     const originalText = button.textContent;
     
-    // Show loading state
     button.textContent = "Capturing...";
     button.disabled = true;
-    
-    // Send request to capture prediction
+
     fetch('/conversion', {
         method: 'POST',
         headers: {
@@ -87,72 +80,71 @@ function captureWebcamPrediction() {
         },
         body: 'action=predict'
     })
-    .then(response => response.text())
+    .then(response => {
+        console.log('Response status:', response.status);
+        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+        return response.text();
+    })
     .then(html => {
-        // Parse the response to extract text and audio
+        console.log('Response HTML:', html);
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
-        
-        // Check for error message
+
         const errorElement = doc.querySelector('.error-message');
-        if (errorElement) {
+        if (errorElement && errorElement.textContent.trim()) {
+            console.log('Error message:', errorElement.textContent);
             alert(errorElement.textContent);
             return;
         }
-        
-        // Extract text result
+
         const textElement = doc.querySelector('#text-result');
+        const audioElement = doc.querySelector('#audio-result');
+
         if (textElement && textElement.textContent.trim()) {
             document.getElementById('text-output').value = `Text: ${textElement.textContent}`;
-            
-            // Extract audio file name
-            const audioElement = doc.querySelector('#audio-result');
-            if (audioElement && audioElement.textContent.trim()) {
-                currentAudioFile = audioElement.textContent;
-                console.log("Audio file available:", currentAudioFile);
-            }
+            console.log('Text result:', textElement.textContent);
+        } else {
+            console.log('No text result in response');
+            document.getElementById('text-output').value = 'Text: No gesture detected';
+        }
+
+        if (audioElement && audioElement.textContent.trim()) {
+            currentAudioFile = audioElement.textContent;
+            const audioPlayer = document.getElementById('audio-player');
+            audioPlayer.src = `/static/audio/${currentAudioFile}`;
+            audioPlayer.style.display = 'block';
+            console.log('Setting audio src:', audioPlayer.src);
+            audioPlayer.play().then(() => {
+                console.log('Audio playing:', currentAudioFile);
+                document.getElementById('play-pause').textContent = 'Pause';
+                isPlaying = true;
+            }).catch(error => {
+                console.error('Audio playback error:', error);
+                alert('Error playing audio: ' + error.message);
+            });
+        } else {
+            console.log('No audio result in response');
+            alert('No audio generated. Please try again.');
         }
     })
     .catch(error => {
-        console.error('Error capturing prediction:', error);
-        alert('Error capturing prediction');
+        console.error('Fetch error:', error);
+        alert('Error capturing prediction: ' + error.message);
     })
     .finally(() => {
-        // Reset button state
         button.textContent = originalText;
         button.disabled = false;
     });
 }
 
-// Start real-time prediction updates when page loads
 document.addEventListener('DOMContentLoaded', function() {
-    // Update predictions every 500ms
     setInterval(updateCurrentPrediction, 500);
-    
-    // Add event listener for capture button if it exists
     const captureBtn = document.getElementById('capture-btn');
     if (captureBtn) {
         captureBtn.addEventListener('click', captureWebcamPrediction);
     }
-});
-
-// Handle video upload form submission
-document.addEventListener('DOMContentLoaded', function() {
-    const videoForm = document.getElementById('video-upload-form');
-    if (videoForm) {
-        videoForm.addEventListener('submit', function(e) {
-            const submitBtn = videoForm.querySelector('button[type="submit"]');
-            const originalText = submitBtn.textContent;
-            
-            // Show loading state
-            submitBtn.textContent = "Processing...";
-            submitBtn.disabled = true;
-            
-            // Re-enable button after form submission
-            setTimeout(() => {
-                submitBtn.textContent = originalText;
-                submitBtn.disabled = false;
-            }, 3000);
-        });
+    const hamburgerBtn = document.getElementById('hamburger');
+    if (hamburgerBtn) {
+        hamburgerBtn.addEventListener('click', toggleMenu);
     }
-});
+})
