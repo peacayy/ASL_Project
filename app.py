@@ -12,12 +12,36 @@ from datetime import datetime
 from collections import deque
 from flask import Flask, render_template, request, Response, url_for, jsonify, flash, redirect
 from werkzeug.utils import secure_filename
+from flask_mail import Mail, Message
 
+# Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'a_very_secret_and_random_key_that_should_be_changed')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'a_very_secret_and_random_key')
+
+# Email configuration
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'aslconverter@gmail.com'  # Replace with sender email
+app.config['MAIL_PASSWORD'] = os.environ.get('njpybkbaqvqinhlu')  # Set in environment
+app.config['MAIL_DEFAULT_SENDER'] = 'aslconverter@gmail.com'
+
+mail = Mail(app)
+
+from flask import Flask, render_template, request, flash, redirect, url_for
+import smtplib
+from email.message import EmailMessage
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key'  # Needed for flashing messages
+
+# Replace with your actual Gmail and app password
+SENDER_EMAIL = 'aslconverter@gmail.com'
+SENDER_PASSWORD = 'njpybkbaqvqinhlu'
+
 
 asl_recognizer_instance = None
 camera_instance = None
@@ -27,46 +51,29 @@ shared_prediction_confidence = 0.0
 
 class ASLRecognizer:
     def __init__(self, model_path, label_encoder_path, config_path):
-        try:
-            self.model = tf.keras.models.load_model(model_path)
-            logger.info(f"Model loaded: {model_path}")
-            with open(label_encoder_path, 'rb') as f:
-                self.label_encoder = pickle.load(f)
-            logger.info(f"Label encoder loaded: {label_encoder_path}")
-            with open(config_path, 'r') as f:
-                self.config = json.load(f)
-            self.sequence_length = self.config.get('sequence_length', 10)
-            self.class_names = self.config.get('class_names', [])
-            logger.info(f"Config: sequence_length={self.sequence_length}, classes={len(self.class_names)}")
-            
-            self.mp_hands = mp.solutions.hands
-            self.hands = self.mp_hands.Hands(
-                static_image_mode=False,
-                max_num_hands=1,
-                min_detection_confidence=0.7,
-                min_tracking_confidence=0.5
-            )
-            self.sequence_buffer = deque(maxlen=self.sequence_length)
-            self.prediction_threshold = 0.7
-            logger.info("ASLRecognizer initialized")
-        except Exception as e:
-            logger.error(f"Error initializing ASLRecognizer: {e}", exc_info=True)
-            raise
+        self.model = tf.keras.models.load_model(model_path)
+        with open(label_encoder_path, 'rb') as f:
+            self.label_encoder = pickle.load(f)
+        with open(config_path, 'r') as f:
+            self.config = json.load(f)
+        self.sequence_length = self.config.get('sequence_length', 10)
+        self.class_names = self.config.get('class_names', [])
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1,
+                                         min_detection_confidence=0.7, min_tracking_confidence=0.5)
+        self.sequence_buffer = deque(maxlen=self.sequence_length)
+        self.prediction_threshold = 0.7
 
     def extract_landmarks(self, image):
-        try:
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            results = self.hands.process(image_rgb)
-            if results.multi_hand_landmarks:
-                landmarks = []
-                for hand_landmarks in results.multi_hand_landmarks:
-                    for lm in hand_landmarks.landmark:
-                        landmarks.extend([lm.x, lm.y, lm.z])
-                return np.array(landmarks, dtype=np.float32)
-            return np.zeros(63, dtype=np.float32)
-        except Exception as e:
-            logger.warning(f"Error extracting landmarks: {e}")
-            return np.zeros(63, dtype=np.float32)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(image_rgb)
+        if results.multi_hand_landmarks:
+            landmarks = []
+            for hand_landmarks in results.multi_hand_landmarks:
+                for lm in hand_landmarks.landmark:
+                    landmarks.extend([lm.x, lm.y, lm.z])
+            return np.array(landmarks, dtype=np.float32)
+        return np.zeros(63, dtype=np.float32)
 
     def normalize_landmarks(self, landmarks):
         if landmarks.sum() == 0:
@@ -77,149 +84,93 @@ class ASLRecognizer:
         return normalized.flatten()
 
     def predict_from_frame(self, frame):
-        try:
-            landmarks = self.extract_landmarks(frame)
-            normalized_landmarks = self.normalize_landmarks(landmarks)
-            self.sequence_buffer.append(normalized_landmarks)
-            
-            if len(self.sequence_buffer) == self.sequence_length:
-                sequence_input = np.array(list(self.sequence_buffer), dtype=np.float32)
-                sequence_input = np.expand_dims(sequence_input, axis=0)
-                prediction_probs = self.model.predict(sequence_input, verbose=0)[0]
-                predicted_class_idx = np.argmax(prediction_probs)
-                confidence = prediction_probs[predicted_class_idx]
-                if confidence > self.prediction_threshold:
-                    predicted_class = self.label_encoder.inverse_transform([predicted_class_idx])[0]
-                    logger.info(f"Prediction: {predicted_class} (Confidence: {confidence:.2f})")
-                    return predicted_class, confidence
-            return None, 0.0
-        except Exception as e:
-            logger.error(f"Error in predict_from_frame: {e}")
-            return None, 0.0
+        landmarks = self.extract_landmarks(frame)
+        normalized = self.normalize_landmarks(landmarks)
+        self.sequence_buffer.append(normalized)
+
+        if len(self.sequence_buffer) == self.sequence_length:
+            sequence_input = np.expand_dims(np.array(self.sequence_buffer), axis=0)
+            prediction_probs = self.model.predict(sequence_input, verbose=0)[0]
+            predicted_idx = np.argmax(prediction_probs)
+            confidence = prediction_probs[predicted_idx]
+            if confidence > self.prediction_threshold:
+                return self.label_encoder.inverse_transform([predicted_idx])[0], confidence
+        return None, 0.0
 
     def predict_from_video(self, video_path):
-        try:
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                raise IOError(f"Could not open video: {video_path}")
-            
-            frame_rate = cap.get(cv2.CAP_PROP_FPS)
-            predictions_list = []
-            self.sequence_buffer.clear()
-            
-            frame_count = 0
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame_skip_interval = max(1, int(frame_rate / 10))
-                if frame_count % frame_skip_interval == 0:
-                    prediction, confidence = self.predict_from_frame(frame.copy())
-                    if prediction:
-                        predictions_list.append(prediction)
-                frame_count += 1
-            
-            cap.release()
-            
-            if predictions_list:
-                from collections import Counter
-                most_common_sign = Counter(predictions_list).most_common(1)[0][0]
-                logger.info(f"Video processed: {most_common_sign}")
-                return most_common_sign, 1.0
-            logger.info(f"No signs detected in video: {video_path}")
-            return None, 0.0
-        except Exception as e:
-            logger.error(f"Error processing video '{video_path}': {e}")
-            return None, 0.0
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise IOError(f"Cannot open video: {video_path}")
+        predictions = []
+        frame_rate = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = 0
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_count % max(1, int(frame_rate / 10)) == 0:
+                pred, conf = self.predict_from_frame(frame)
+                if pred:
+                    predictions.append(pred)
+            frame_count += 1
+        cap.release()
+        if predictions:
+            from collections import Counter
+            return Counter(predictions).most_common(1)[0][0], 1.0
+        return None, 0.0
 
 def initialize_application():
     global asl_recognizer_instance
-    try:
-        model_path = os.path.join("model_outputs", "final_asl_model.h5")
-        label_encoder_path = os.path.join("model_outputs", "label_encoder.pkl")
-        config_path = os.path.join("model_outputs", "model_config.json")
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        os.makedirs(os.path.join('static', 'audio'), exist_ok=True)
-        os.makedirs('uploads', exist_ok=True)
-        asl_recognizer_instance = ASLRecognizer(model_path, label_encoder_path, config_path)
-        logger.info("Application initialized")
-    except Exception as e:
-        logger.error(f"Initialization error: {e}", exc_info=True)
-        exit(1)
+    model_path = os.path.join("model_outputs", "final_asl_model.h5")
+    label_path = os.path.join("model_outputs", "label_encoder.pkl")
+    config_path = os.path.join("model_outputs", "model_config.json")
+    asl_recognizer_instance = ASLRecognizer(model_path, label_path, config_path)
 
-def text_to_speech(text, filename_prefix):
-    try:
-        audio_dir = os.path.join('static', 'audio')
-        safe_text = "".join(c for c in text if c.isalnum() or c in (' ', '_')).strip() or "unknown"
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-        audio_filename = f'{filename_prefix}_{safe_text}_{timestamp}.mp3'
-        audio_path_full = os.path.join(audio_dir, audio_filename)
-        logger.info(f"Saving audio to: {os.path.abspath(audio_path_full)}")
-        
-        tts = gTTS(text=text, lang='en', slow=False)
-        tts.save(audio_path_full)
-        
-        if os.path.exists(audio_path_full):
-            logger.info(f"Audio saved: {audio_path_full} ({os.path.getsize(audio_path_full)} bytes)")
-            return audio_filename
-        logger.error(f"Audio file not created: {audio_path_full}")
-        return None
-    except Exception as e:
-        logger.error(f"Error generating speech for '{text}': {e}", exc_info=True)
-        return None
+    os.makedirs(os.path.join('static', 'audio'), exist_ok=True)
+    os.makedirs('uploads', exist_ok=True)
+
+def text_to_speech(text, prefix):
+    audio_dir = os.path.join('static', 'audio')
+    safe_text = "".join(c for c in text if c.isalnum() or c in (' ', '_')).strip() or "unknown"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+    filename = f"{prefix}_{safe_text}_{timestamp}.mp3"
+    path = os.path.join(audio_dir, filename)
+    gTTS(text=text, lang='en').save(path)
+    return filename
 
 def generate_frames():
     global camera_instance, shared_current_prediction, shared_prediction_confidence
     if camera_instance is None:
         camera_instance = cv2.VideoCapture(0)
-        if not camera_instance.isOpened():
-            logger.error("Failed to open webcam")
-            yield (b'--frame\r\n'
-                   b'Content-Type: text/plain\r\n\r\n' + b'Error: Could not open webcam' + b'\r\n')
-            return
         camera_instance.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         camera_instance.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        logger.info("Webcam initialized")
 
-    if asl_recognizer_instance:
-        asl_recognizer_instance.sequence_buffer.clear()
-        logger.info("Sequence buffer cleared")
+    asl_recognizer_instance.sequence_buffer.clear()
 
-    try:
-        while True:
-            success, frame = camera_instance.read()
-            if not success:
-                logger.warning("Failed to read webcam frame")
-                break
-            frame = cv2.flip(frame, 1)
-            
-            if asl_recognizer_instance:
-                prediction, confidence = asl_recognizer_instance.predict_from_frame(frame.copy())
-                with prediction_lock:
-                    if prediction:
-                        shared_current_prediction = prediction
-                        shared_prediction_confidence = confidence
-                        logger.debug(f"Updated prediction: {prediction} (Confidence: {confidence:.2f})")
-                    else:
-                        shared_current_prediction = ""
-                        shared_prediction_confidence = 0.0
+    while True:
+        success, frame = camera_instance.read()
+        if not success:
+            break
+        frame = cv2.flip(frame, 1)
+        pred, conf = asl_recognizer_instance.predict_from_frame(frame.copy())
+        with prediction_lock:
+            if pred:
+                shared_current_prediction = pred
+                shared_prediction_confidence = conf
+            else:
+                shared_current_prediction = ""
+                shared_prediction_confidence = 0.0
 
-            display_prediction = shared_current_prediction if shared_current_prediction else "Detecting..."
-            cv2.putText(frame, f"Sign: {display_prediction}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            if shared_prediction_confidence > 0:
-                cv2.putText(frame, f"Confidence: {shared_prediction_confidence:.2f}", (10, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        display_text = shared_current_prediction if shared_current_prediction else "Detecting..."
+        cv2.putText(frame, f"Sign: {display_text}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        if shared_prediction_confidence > 0:
+            cv2.putText(frame, f"Confidence: {shared_prediction_confidence:.2f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    finally:
-        if camera_instance:
-            camera_instance.release()
-            logger.info("Webcam released")
-            camera_instance = None
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
 @app.route('/')
 def index():
@@ -233,63 +184,37 @@ def conversion():
 
     if request.method == 'POST':
         if 'video' in request.files and request.files['video'].filename:
-            video_file = request.files['video']
-            allowed_extensions = {'mp4', 'avi', 'mov'}
-            if '.' in video_file.filename and video_file.filename.rsplit('.', 1)[1].lower() in allowed_extensions:
-                try:
-                    video_filename = secure_filename(f"uploaded_video_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4")
-                    video_path = os.path.join('uploads', video_filename)
-                    video_file.save(video_path)
-                    logger.info(f"Uploaded video saved: {video_path}")
+            video = request.files['video']
+            filename = secure_filename(f"uploaded_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4")
+            path = os.path.join('uploads', filename)
+            video.save(path)
 
-                    if asl_recognizer_instance:
-                        prediction, confidence = asl_recognizer_instance.predict_from_video(video_path)
-                        if prediction:
-                            text_result = prediction.upper()
-                            audio_filename = text_to_speech(text_result, "video_prediction")
-                            flash(f"Recognized: {text_result}", 'success')
-                        else:
-                            error_message = "No clear sign detected in video"
-                            flash(error_message, 'warning')
-                    else:
-                        error_message = "Recognition model not loaded"
-                        flash(error_message, 'error')
-                except Exception as e:
-                    error_message = f"Error processing video: {str(e)}"
-                    flash(error_message, 'error')
-                finally:
-                    if 'video_path' in locals() and os.path.exists(video_path):
-                        os.remove(video_path)
-                        logger.info(f"Cleaned up video: {video_path}")
+            pred, conf = asl_recognizer_instance.predict_from_video(path)
+            os.remove(path)
+            if pred:
+                text_result = pred.upper()
+                audio_filename = text_to_speech(text_result, "video")
+                flash(f"Recognized: {text_result}", 'success')
             else:
-                error_message = "Invalid video format. Use MP4, AVI, or MOV."
-                flash(error_message, 'warning')
-
+                flash("No sign detected", 'warning')
         elif request.form.get('action') == 'predict':
             with prediction_lock:
                 if shared_current_prediction and shared_prediction_confidence > 0.5:
                     text_result = shared_current_prediction.upper()
-                    audio_filename = text_to_speech(text_result, "webcam_capture")
-                    if audio_filename:
-                        flash(f"Recognized: {text_result}", 'success')
-                        shared_current_prediction = ""
-                        shared_prediction_confidence = 0.0
-                    else:
-                        error_message = "Failed to generate audio"
-                        flash(error_message, 'warning')
+                    audio_filename = text_to_speech(text_result, "webcam")
+                    flash(f"Recognized: {text_result}", 'success')
+                    shared_current_prediction = ""
+                    shared_prediction_confidence = 0.0
                 else:
-                    error_message = "No clear sign detected from webcam"
-                    flash(error_message, 'warning')
-            
-            response_html = f'''<!DOCTYPE html>
-            <html>
-            <body>
-                <div id="text-result">{text_result}</div>
-                <div id="audio-result">{audio_filename if audio_filename else ''}</div>
-                <div class="error-message">{error_message if error_message else ''}</div>
-            </body>
-            </html>'''
-            return response_html
+                    flash("No clear sign detected", 'warning')
+
+        response_html = f'''
+        <!DOCTYPE html>
+        <html><body>
+        <div id="text-result">{text_result}</div>
+        <div id="audio-result">{audio_filename or ''}</div>
+        </body></html>'''
+        return response_html
 
     audio_url = url_for('static', filename=f'audio/{audio_filename}') if audio_filename else None
     return render_template('conversion.html', text=text_result, audio=audio_url, error=error_message)
@@ -313,13 +238,36 @@ def about():
 @app.route('/feedback', methods=['GET', 'POST'])
 def feedback():
     if request.method == 'POST':
-        name = request.form.get('name')
-        email = request.form.get('email')
-        remark = request.form.get('remark')
-        logger.info(f"Feedback from {name} ({email}): {remark}")
-        flash("Thank you for your feedback!", 'success')
+        user_name = request.form.get('name')
+        user_email = request.form.get('email')
+        user_message = request.form.get('remark') 
+
+        if not user_name or not user_email or not user_message:
+            flash('Please fill in all fields.', 'warning')
+            return redirect(url_for('feedback'))
+
+        msg = EmailMessage()
+        msg['Subject'] = f'Feedback from {user_name}'
+        msg['From'] = user_email  # <-- use user's entered email as From
+        msg['To'] = 'aslconverter@gmail.com'  # Your email where feedback goes
+
+        body = f"Name: {user_name}\nEmail: {user_email}\n\nMessage:\n{user_message}"
+        msg.set_content(body)
+
+        try:
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                smtp.login(SENDER_EMAIL, SENDER_PASSWORD)
+                smtp.send_message(msg)
+            flash('Thank you for your feedback!', 'success')
+        except Exception as e:
+            print(f"Error sending email: {e}")
+            flash('Failed to send feedback. Please try again later.', 'danger')
+
         return redirect(url_for('feedback'))
+
     return render_template('feedback.html')
+
+
 
 @app.route('/contact')
 def contact():
