@@ -491,7 +491,23 @@ header
 .social-links a:hover {
     color: #7B68EE; /* Slightly darker lavender */
 }
+.flash-message.success {
+    color: green;
+    background-color: #e0f7e9;
+    border: 1px solid #2ecc71;
+    padding: 8px;
+    border-radius: 5px;
+    margin-bottom: 10px;
+}
 
+.flash-message.warning {
+    color: #856404;
+    background-color: #fff3cd;
+    border: 1px solid #ffeeba;
+    padding: 8px;
+    border-radius: 5px;
+    margin-bottom: 10px;
+}
 /* Responsive Design */
 @media (max-width: 768px) {
     .contact-container {
